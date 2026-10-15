@@ -1,0 +1,53 @@
+{
+  "realm": "mcp-sentinel",
+  "enabled": true,
+  "sslRequired": "none",
+  "roles": {
+    "realm": [
+      { "name": "USER" },
+      { "name": "DEVELOPER" },
+      { "name": "ANALYST" },
+      { "name": "SECURITY_ADMIN" },
+      { "name": "SYSTEM_ADMIN" }
+    ]
+  },
+  "clients": [
+    {
+      "clientId": "mcp-sentinel",
+      "enabled": true,
+      "publicClient": false,
+      "secret": "sentinel-client-secret",
+      "directAccessGrantsEnabled": true,
+      "standardFlowEnabled": true,
+      "redirectUris": ["http://localhost:*"],
+      "webOrigins": ["+"],
+      "protocol": "openid-connect",
+      "attributes": {
+        "pkce.code.challenge.method": "S256"
+      },
+      "defaultClientScopes": ["openid", "profile", "email", "roles"],
+      "optionalClientScopes": ["acr"]
+    }
+  ],
+  "users": [
+    {
+      "username": "analyst",
+      "enabled": true,
+      "email": "analyst@example.com",
+      "credentials": [{ "type": "password", "value": "analyst-pass", "temporary": false }],
+      "realmRoles": ["ANALYST"]
+    },
+    {
+      "username": "secadmin",
+      "enabled": true,
+      "email": "secadmin@example.com",
+      "credentials": [{ "type": "password", "value": "secadmin-pass", "temporary": false }],
+      "realmRoles": ["SECURITY_ADMIN"]
+    }
+  ],
+  "browserFlow": "browser",
+  "authenticationFlows": [],
+  "otpPolicyType": "totp",
+  "otpPolicyAlgorithm": "HmacSHA1",
+  "webAuthnPolicyRpEntityName": "MCP-Sentinel"
+}

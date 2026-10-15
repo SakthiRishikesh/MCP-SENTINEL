@@ -1,0 +1,12 @@
+.venv
+venv
+__pycache__
+.git
+dashboard/node_modules
+dashboard/dist
+*.db
+.pytest_cache
+.mypy_cache
+web/node_modules
+web/dist
+newpage/node_modules

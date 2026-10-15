@@ -1,0 +1,58 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: sentinel
+      POSTGRES_PASSWORD: sentinel
+      POSTGRES_DB: sentinel
+    volumes:
+      - sentinel-pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sentinel"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+
+  sentinel:
+    build:
+      context: .
+      dockerfile: docker/sentinel.Dockerfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    environment:
+      SENTINEL_AUTH_MODE: demo
+      SENTINEL_DATABASE_URL: postgresql+psycopg2://sentinel:sentinel@postgres:5432/sentinel
+      SENTINEL_REDIS_URL: redis://redis:6379/0
+      SENTINEL_DEMO_JWT_SECRET: change-me-demo-only-not-for-production
+      SENTINEL_CORS_ORIGINS: http://localhost:5173,http://localhost:3000
+      SENTINEL_GATEWAY_HOST: 0.0.0.0
+      SENTINEL_PUBLIC_URL: http://localhost:8443
+      SENTINEL_DASHBOARD_URL: http://localhost:3000
+      SENTINEL_ALLOWED_HOSTS: localhost,127.0.0.1,sentinel,host.docker.internal
+      # requests arrive from the dashboard's nginx container, not loopback; ports are bound to 127.0.0.1 below
+      SENTINEL_DEMO_TOKEN_LOOPBACK_ONLY: "false"
+      SENTINEL_SECRETS_KEY_FILE: /data/keys/sentinel.key
+      SENTINEL_RECEIPT_KEY_FILE: /data/keys/receipt_ed25519.pem
+    volumes:
+      - sentinel-keys:/data/keys
+    ports:
+      - "127.0.0.1:8443:8443"
+
+  dashboard:
+    build:
+      context: .
+      dockerfile: docker/dashboard.Dockerfile
+    ports:
+      - "127.0.0.1:3000:80"
+    depends_on:
+      - sentinel
+
+volumes:
+  sentinel-pg:
+  sentinel-keys:
