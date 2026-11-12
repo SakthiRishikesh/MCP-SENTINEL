@@ -24,6 +24,7 @@ import threading
 import time
 from collections import deque
 from concurrent.futures import Future, TimeoutError as FutureTimeout
+from pathlib import Path
 from typing import Any, Callable, Iterable, Iterator
 from urllib.parse import urljoin
 
@@ -89,6 +90,16 @@ def default_child_env() -> dict[str, str]:
     else:
         keys = ["HOME", "LOGNAME", "PATH", "SHELL", "TERM", "USER", "LANG", "LC_ALL", "TMPDIR", "XDG_RUNTIME_DIR"]
     env = {k: v for k, v in os.environ.items() if k.upper() in {x.upper() for x in keys} and not v.startswith("()")}
+    if sys.platform == "win32":
+        # MCP servers are often started with npx/uvx, which need writable package caches.
+        # Their Windows defaults live under the profile's LocalAppData and can be unavailable
+        # to Sentinel when it is launched from a restricted workspace or service account.
+        # Keep the caches beside the checkout so first-run installs can complete reliably.
+        cache_root = Path(__file__).resolve().parents[2] / ".sentinel-cache"
+        env.setdefault("npm_config_cache", str(cache_root / "npm"))
+        env.setdefault("UV_CACHE_DIR", str(cache_root / "uv"))
+        env.setdefault("UV_PYTHON_INSTALL_DIR", str(cache_root / "uv" / "python"))
+        env.setdefault("UV_TOOL_DIR", str(cache_root / "uv" / "tools"))
     for proxy_var in ("HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "no_proxy",
                       "SSL_CERT_FILE", "NODE_EXTRA_CA_CERTS", "REQUESTS_CA_BUNDLE"):
         if proxy_var in os.environ:
@@ -647,8 +658,19 @@ class LegacySseClient(BaseClient):
 
 def _launch_hint(stderr: str) -> str:
     """Turn common launcher failures into an actionable message."""
-    if "_npx" in stderr and ("ENOTEMPTY" in stderr or "ERR_MODULE_NOT_FOUND" in stderr):
-        return " — hint: npx's package cache looks corrupted (an interrupted install); delete the ~/.npm/_npx folder and retry"
+    if "dns error" in stderr.lower() or "no such host is known" in stderr.lower():
+        return (
+            " — hint: the server could not resolve its package index host. This is a DNS/network issue, "
+            "not an MCP protocol failure. Verify DNS and HTTPS access to pypi.org from the same host or "
+            "container that runs Sentinel, then retry discovery; package installs cannot succeed offline "
+            "unless the pinned package is already cached."
+        )
+    if "ERR_MODULE_NOT_FOUND" in stderr or ("_npx" in stderr and "ENOTEMPTY" in stderr):
+        return (
+            " — hint: Node could not load the installed MCP package (often a partial npx cache install). "
+            "Keep the package version pinned and retry discovery; if it repeats, remove only this package's "
+            "entry under .sentinel-cache/npm/_npx and retry"
+        )
     if "command not found" in stderr or "not recognized as an internal or external command" in stderr:
         return " — hint: the launcher is not on Sentinel's PATH; use an absolute path to npx/uvx/node/python"
     return ""
@@ -664,6 +686,12 @@ def connect(
     """Create a client for the given transport and perform the MCP initialize handshake."""
     transport = (transport or "http").lower()
     if transport == "stdio":
+        placeholders = [str(arg) for arg in (config.get("args") or []) if "<absolute path to " in str(arg).lower()]
+        if placeholders:
+            raise UpstreamError(
+                "server arguments contain an unfilled setup placeholder. Replace it with a real absolute "
+                "path in Servers → Edit, then rediscover the server."
+            )
         client: BaseClient = StdioClient(
             server_id,
             command=str(config.get("command") or ""),
@@ -675,7 +703,9 @@ def connect(
         try:
             client.initialize(timeout=timeout)
         except Exception as exc:
-            tail = " | ".join(client.stderr_tail(5))
+            # Preserve the first error frames too; ESM's actual missing module is usually
+            # reported near the top of the stack, before the final ERR_MODULE_NOT_FOUND code.
+            tail = " | ".join(client.stderr_tail(15))
             client.close()
             raise UpstreamError(f"{exc}{' — stderr: ' + tail if tail else ''}{_launch_hint(tail)}") from exc
         return client

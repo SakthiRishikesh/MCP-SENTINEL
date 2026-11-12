@@ -565,7 +565,7 @@ class ControlPlane:
                 "exposed_name": tool.exposed_name,
                 "arguments_preview": arguments_preview(request.arguments),
                 "capabilities": tool.capabilities,
-                "user_intent": request.user_intent[:300],
+                "user_intent": (request.user_intent or "")[:300],
             },
         )
         self.session.add(row)

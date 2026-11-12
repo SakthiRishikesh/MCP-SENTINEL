@@ -72,8 +72,10 @@ def mask_mapping(mapping: dict[str, Any] | None) -> dict[str, str]:
     out: dict[str, str] = {}
     for k, v in (mapping or {}).items():
         s = str(v)
-        if not is_sensitive_key(k) and len(s) <= 64 and not any(c in s for c in ("@", ":")):
-            out[k] = s if len(s) <= 12 else s[:4] + "…" + s[-2:]
-        else:
+        if is_sensitive_key(k) or len(s) > 64 or any(c in s for c in ("@", ":")):
             out[k] = "••••••••"
+        elif len(s) <= 4:
+            out[k] = s
+        else:
+            out[k] = s[:2] + "…" + s[-2:]
     return out

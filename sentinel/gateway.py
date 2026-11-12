@@ -204,8 +204,13 @@ class Gateway:
         if last is not None and (utcnow() - last).total_seconds() < max_age:
             return
         with _jit_lock:
+            # Periodic cleanup: remove backoff entries older than 5 minutes
+            now = time.time()
+            stale = [k for k, t in _jit_backoff.items() if now - t > 300]
+            for k in stale:
+                _jit_backoff.pop(k, None)
             failed_at = _jit_backoff.get(server.server_id, 0.0)
-            if time.time() - failed_at < 30:
+            if now - failed_at < 30:
                 return
         result = discover_server(self.session, server.server_id, "just-in-time integrity check before execution", self.manager)
         if result.get("error"):
@@ -461,6 +466,11 @@ def _first_notice(ident: str) -> bool:
     """True the first time an approval / challenge id is announced (retries reuse the same id)."""
     now = time.time()
     with _noticed_lock:
+        # Safety cap: if the dict grows too large, evict the oldest half
+        if len(_noticed) > 10_000:
+            oldest = sorted(_noticed.items(), key=lambda x: x[1])[:5000]
+            for k, _ in oldest:
+                _noticed.pop(k, None)
         for key in [k for k, t in _noticed.items() if now - t > 3600]:
             _noticed.pop(key, None)
         if ident in _noticed:

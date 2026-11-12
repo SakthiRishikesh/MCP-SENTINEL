@@ -71,7 +71,10 @@ class Change:
     diff: str = ""
 
     def as_dict(self) -> dict[str, Any]:
-        out = {"path": self.real or self.rel, "change": self.kind, "size_before": self.size_before, "size_after": self.size_after}
+        # Forward slashes are accepted by Windows APIs and keep serialized paths portable
+        # for receipts, clients, and callers that split paths on '/'.
+        path = (self.real or self.rel).replace("\\", "/")
+        out = {"path": path, "change": self.kind, "size_before": self.size_before, "size_after": self.size_after}
         if self.diff:
             out["diff"] = self.diff
         return out

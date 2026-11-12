@@ -110,6 +110,8 @@ def update(baseline: dict[str, Any] | None, obs: Observation) -> tuple[dict[str,
         b["hosts"] = sorted((hosts | set(obs.new_remote_hosts)))[:MAX_SET]
         if obs.secrets:
             b["secrets_seen"] = True
+        if obs.injection:
+            b["injection_seen"] = True
     # anomaly score decays (half-life 30 min) and feeds the risk engine for later calls
     now = time.time()
     prev = float(b.get("anomaly_score", 0.0)) * 0.5 ** ((now - float(b.get("anomaly_at", now))) / 1800.0)

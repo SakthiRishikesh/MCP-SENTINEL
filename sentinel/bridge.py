@@ -89,8 +89,12 @@ def ensure_api(base: str, wait: float = 30.0) -> bool:
             import fcntl
 
             fcntl.flock(lock, fcntl.LOCK_EX)
-        except ImportError:  # Windows: no advisory locks; a duplicate start just fails to bind the port
-            pass
+        except ImportError:
+            try:
+                import msvcrt
+                msvcrt.locking(lock.fileno(), msvcrt.LK_LOCK, 1)
+            except (ImportError, OSError):
+                pass  # no advisory locks available; a duplicate start just fails to bind the port
         if not api_healthy(base):
             log(f"API not running at {base}; starting it (log: {DATA_DIR / 'sentinel.log'})")
             detach: dict[str, Any] = (

@@ -8,7 +8,7 @@ Each server below was registered through the API, honeypot-sandboxed, discovered
 
 | Server | Launch (pinned) | Tools | Notes from testing |
 |---|---|---|---|
-| **Filesystem** | `npx -y @modelcontextprotocol/server-filesystem@2026.8.31 <folder>` | 14 | Reads ALLOW; credential paths (`~/.ssh`, `.env`, …) BLOCK before the server sees them; writes are WRITE capability; file contents are DLP-redacted |
+| **Filesystem** | `npx -y @modelcontextprotocol/server-filesystem@2.3.0 <folder>` | 14 | Reads ALLOW; credential paths (`~/.ssh`, `.env`, …) BLOCK before the server sees them; writes are WRITE capability; file contents are DLP-redacted |
 | **Memory** (knowledge graph) | `npx -y @modelcontextprotocol/server-memory@2026.8.31` | 9 | Grade A; active probes run against `search_nodes` inside the honeypot |
 | **Everything** (MCP reference/test server) | `npx -y @modelcontextprotocol/server-everything@2026.8.31` | 13 | Exercises every content type: images, `structuredContent`, resource links, annotations and long-running tasks all pass through. `get-env` is correctly classified as SECRET_ACCESS. Also verified in `streamableHttp` and `sse` modes |
 | **Fetch** | `uvx mcp-server-fetch==2026.8.18` | 1 | EXTERNAL_LOOKUP + egress sink: taint tracking blocks secrets placed in URLs. Needs outbound internet |
@@ -36,7 +36,7 @@ Servers that **only** offer an interactive OAuth login (no static token) are not
 * **Secrets go in the server's environment field.** They are stored encrypted, never shown to the model, and the scanner flags tokens passed on the command line.
 * **Windows:** use `npx` / `uvx` as usual; Sentinel resolves `npx.cmd`. If a launcher isn't found, give its absolute path.
 * **First launch of an `npx`/`uvx` server** downloads the package; registration waits up to `SENTINEL_UPSTREAM_CONNECT_TIMEOUT_SECONDS` (90 s).
-* If `npx` reports `ENOTEMPTY` or `ERR_MODULE_NOT_FOUND` inside `~/.npm/_npx`, an install was interrupted. Delete that folder and retry (Sentinel's error message says so).
+* If `npx` reports `ENOTEMPTY` or `ERR_MODULE_NOT_FOUND` inside its cache, remove only the affected package's cache entry and retry. On Windows, Sentinel's default cache is `.sentinel-cache/npm/_npx` inside the checkout.
 * Every server is vulnerability-scanned as it is added; the add dialog shows a SAFE / CAUTION / NOT SAFE verdict and the recommended fixes.
 
 ## Project-specific live operations servers
@@ -45,8 +45,8 @@ These two servers are implemented in this repository and read the live Sentinel 
 
 | Server | Launch | Tools | Purpose |
 |---|---|---|---|
-| **Sentinel Operations** | `python <repo>\\mcp_servers\\operations.py` | 4 | Reads current posture, registered servers/tools, and security events |
-| **Sentinel Live Report** | `python <repo>\\mcp_servers\\reporter.py <report-folder>` | 1 | Writes a live API report under a configured folder, without overwriting existing reports |
+| **Sentinel Operations** | `python -m mcp_servers.operations` | 4 | Reads current posture, registered servers/tools, and security events |
+| **Sentinel Live Report** | `python -m mcp_servers.reporter <report-folder>` | 1 | Writes a live API report under a configured folder, without overwriting existing reports |
 
 ## A live security review workflow
 
@@ -59,6 +59,6 @@ Use the tools in this order:
 3. Pass the returned `server_id` to `inspect_registered_server` to review its live trust state, tools, and findings.
 4. Call `write_live_security_report`, optionally passing that `server_id`, to save the current posture and related live records in the configured report folder. Choose `destination_name` when you want a specific new filename; otherwise the server generates a timestamped one.
 
-In the dashboard, choose **Servers -> Connect server -> Local (stdio)** and select the **Sentinel Operations (live)** preset. Set Command to your Python executable (on Windows, `<repo>\.venv\Scripts\python.exe`) and replace the script placeholder with the absolute path to `mcp_servers/operations.py`. Repeat with **Sentinel Live Report**, supplying the absolute path to `mcp_servers/reporter.py` and an existing report folder. In demo mode the read-only API is available locally without a token. For OIDC, add `SENTINEL_API_URL` and a valid `SENTINEL_TOKEN` in the server Environment field. The default API URL is `http://127.0.0.1:8443`; when the API runs inside Compose, use its service URL and a container-visible report folder instead. For Windows host paths, run Sentinel natively as described in [windows.md](windows.md).
+In the dashboard, choose **Servers -> Connect server -> Local (stdio)** and select the **Sentinel Operations (live)** preset. Set Command to your Python executable (on Windows, `<repo>\.venv\Scripts\python.exe`); the preset launches the installed module directly. The **Sentinel Live Report** preset also launches by module and prompts for an existing report folder. In demo mode the read-only API is available locally without a token. For OIDC, add `SENTINEL_API_URL` and a valid `SENTINEL_TOKEN` in the server Environment field. The default API URL is `http://127.0.0.1:8443`; when the API runs inside Compose, use its service URL and a container-visible report folder instead. For Windows host paths, run Sentinel natively as described in [windows.md](windows.md).
 
 The report server has a WRITE capability, so Sentinel previews its file creation under the normal policy and sandbox flow. The Operations server is read-only.

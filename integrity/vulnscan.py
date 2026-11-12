@@ -1,7 +1,6 @@
-"""MCP vulnerability scanner - a Python port of SecureMCP (github.com/makalin/SecureMCP, MIT),
-extended to the MCP protocol itself.
+"""
 
-SecureMCP ships three scanners and a report generator. Each is reproduced here and finished
+Each is reproduced here and finished
 where the original is a stub:
 
 * OAuth / token scanner  (``oauth.go``)  - JWT format, expiry, scope and storage checks; token

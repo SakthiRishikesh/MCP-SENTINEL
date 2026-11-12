@@ -1,5 +1,6 @@
 .venv/
 venv/
+.sentinel-cache/
 __pycache__/
 *.py[cod]
 *.egg-info/

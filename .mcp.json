@@ -1,0 +1,17 @@
+{
+  "mcpServers": {
+    "mcp-sentinel": {
+      "type": "stdio",
+      "command": "C:\\Users\\Admin\\OneDrive\\Desktop\\MCP-SENTINEL-main\\.venv\\Scripts\\python.exe",
+      "args": [
+        "-m",
+        "sentinel.bridge"
+      ],
+      "env": {
+        "SENTINEL_API_URL": "http://127.0.0.1:8443",
+        "SENTINEL_SUBJECT": "local-user",
+        "SENTINEL_ROLE": "SECURITY_ADMIN"
+      }
+    }
+  }
+}

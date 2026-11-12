@@ -38,6 +38,7 @@ def _blank(subject: str) -> dict[str, Any]:
         "last_seen": now,
         "calls": 0,          # executed (allowed) calls counted into the baseline
         "denied": 0,         # calls blocked / denied for this subject (lifetime)
+        "denied_at": [],     # Unix timestamps of each denial (for time-decayed scoring)
         "sensitive_calls": 0,
         "tools": {},         # exposed_name -> count
         "servers": {},       # server_id -> count
@@ -127,10 +128,24 @@ def assess(
     if recent_calls_last_minute >= max(12, peak * 3):
         ev("entity_volume_spike", 0.25,
            f"{recent_calls_last_minute} calls in the last minute — well above {profile['subject']}'s usual peak of {peak}/min")
-    denied = int(profile.get("denied") or 0)
-    if sensitive and denied >= 3:
-        ev("entity_denial_history", min(0.4, 0.1 + 0.05 * denied),
-           f"{profile['subject']} has {denied} denied calls on record and is attempting another sensitive action")
+    # Denial history: use a decayed weight so early misconfiguration doesn't penalise forever.
+    # Each denial contributes 1.0 at the time it happened, decaying with a 7-day half-life.
+    denied_timestamps = list(profile.get("denied_at") or [])
+    if denied_timestamps and sensitive:
+        import time as _time
+        now_ts = _time.time()
+        half_life = 7 * 86400  # 7 days
+        decayed_weight = sum(
+            0.5 ** ((now_ts - float(ts)) / half_life)
+            for ts in denied_timestamps
+            if isinstance(ts, (int, float))
+        )
+        if decayed_weight >= 2.0:  # equivalent to ~2+ recent denials
+            p = min(0.4, 0.08 + 0.06 * decayed_weight)
+            total_denied = int(profile.get("denied") or 0)
+            ev("entity_denial_history", p,
+               f"{profile['subject']} has {total_denied} denied calls on record "
+               f"(recent-weighted: {decayed_weight:.1f}) and is attempting a sensitive action")
     return res
 
 
@@ -150,6 +165,11 @@ def record(
     profile["last_seen"] = now.isoformat()
     if not allowed:
         profile["denied"] = int(profile.get("denied") or 0) + 1
+        # Record timestamp for time-decayed denial scoring (keep last 50 denial times)
+        import time as _time
+        denied_at = list(profile.get("denied_at") or [])
+        denied_at.append(_time.time())
+        profile["denied_at"] = denied_at[-50:]
         return profile
     profile["calls"] = int(profile.get("calls") or 0) + 1
     _bump(profile["servers"], server_id)

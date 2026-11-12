@@ -48,6 +48,11 @@ def _signing_key() -> Ed25519PrivateKey:
                 raise RuntimeError("receipt signing key must be Ed25519")
             key = loaded
         else:
+            import logging
+            logging.getLogger("sentinel.receipts").warning(
+                "Receipt signing key not found at %s; generating a new one. "
+                "Historical receipt signatures will not verify with this key.", p
+            )
             key = Ed25519PrivateKey.generate()
             p.parent.mkdir(parents=True, exist_ok=True)
             pem = key.private_bytes(

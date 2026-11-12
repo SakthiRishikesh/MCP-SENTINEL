@@ -18,6 +18,7 @@ COPY mfa ./mfa
 COPY dataflow ./dataflow
 COPY sandbox ./sandbox
 COPY mcp_servers ./mcp_servers
-RUN pip install --no-cache-dir .
+# Compose uses PostgreSQL; install the project's optional PostgreSQL driver in this image.
+RUN pip install --no-cache-dir ".[postgres]"
 EXPOSE 8443
 CMD ["uvicorn", "sentinel.app:app", "--host", "0.0.0.0", "--port", "8443"]

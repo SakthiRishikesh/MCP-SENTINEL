@@ -1,115 +1,313 @@
 # MCP-Sentinel
 
-**An adaptive, zero-trust security control plane for the Model Context Protocol.**
+**An adaptive, zero-trust security control plane for the Model Context Protocol (MCP).**
 
-Add **one** MCP server to Claude Desktop or Claude Code: MCP-Sentinel. Then connect your own MCP servers from its dashboard. Those can be local `npx` / `uvx` / Docker / Python servers or remote Streamable HTTP / SSE servers. They all appear in Claude behind Sentinel, and **every tool call is verified, risk-scored and enforced outside the model**, before, during and after execution.
+MCP-Sentinel sits between MCP clients such as Claude Desktop or Claude Code and the MCP servers they use. Connect a client to Sentinel once, then add local or remote MCP servers through the dashboard. Sentinel checks and governs tool calls outside the model: it applies identity and policy controls, evaluates risk, can run local calls through a sandbox preflight, records decisions, and filters returned content.
 
-**Every call to a local server is first run in a sandbox.** A throw-away copy of the server works on a copy of your files, with decoy credentials and no real network. Sentinel only lets the real call happen if that run was clean. A malicious call is blocked even if someone clicks "approve". A surprising one waits for a person, with a preview of exactly which files would change. Anything the real call does that the sandbox didn't predict is reverted on the spot.
+The model can request a tool call; Sentinel makes the enforcement decision. For local stdio servers, Sentinel can first run a call against a disposable workspace and compare the observed result with the real call. Suspicious calls can require human review, and malicious calls are blocked regardless of approval.
 
-The LLM can only *propose* a tool call. Sentinel decides.
+> **Project status:** the default setup is a local development/demo configuration. Demo authentication and seeded accounts are convenient for trying the project, but are not production identity configuration. Review the [security model](docs/security-model.md), [threat model](docs/threat-model.md), and [limitations](docs/limitations.md) before exposing an instance to other users or networks.
 
+## Contents
+
+- [Features](#features)
+- [Architecture](#architecture)
+- [Requirements](#requirements)
+- [Installation and local setup](#installation-and-local-setup)
+- [Run MCP-Sentinel](#run-mcp-sentinel)
+- [Connect an MCP client](#connect-an-mcp-client)
+- [Add MCP servers](#add-mcp-servers)
+- [Configuration](#configuration)
+- [Docker Compose](#docker-compose)
+- [Development](#development)
+- [API and technical details](#api-and-technical-details)
+- [Troubleshooting](#troubleshooting)
+- [Documentation and references](#documentation-and-references)
+- [Contributing](#contributing)
+- [License](#license)
+
+## Features
+
+- **MCP gateway:** exposes a Streamable HTTP MCP endpoint and a stdio bridge for clients. Local stdio, Streamable HTTP, and SSE upstream servers are supported.
+- **Policy and identity controls:** role and capability checks, configurable rules, organization membership and assignments, lockdown, MFA step-up, human approvals, and short-lived scoped leases.
+- **Risk analysis:** combines policy context with workflow history, caller behavior, data flow, tool capabilities, and other evidence. Hard policy decisions remain authoritative.
+- **Local-call sandboxing:** optional shadow execution for local tools, behavior audits on registration, effect previews, blast-radius checks, and comparison of predicted versus actual effects. Docker provides stronger containment; process mode is a fallback with weaker isolation.
+- **Server and tool integrity checks:** tool-definition pinning and drift detection, tool-poisoning checks, vulnerability scans, and supply-chain signals.
+- **Data and output protections:** input validation, secret redaction, taint tracking, prompt-injection detection, and output filtering.
+- **Audit and incident response:** signed, hash-chained decision receipts, workflow replay, undo journals, alerts, and signed incident reports.
+- **Web interface:** a landing/auth site at `/` and the login-gated control dashboard at `/app` when the frontends have been built.
+
+See [DEMO.md](DEMO.md) for a guided walk-through and the [documentation index](#documentation-and-references) for subsystem details.
+
+## Architecture
+
+```text
+MCP client (stdio bridge or Streamable HTTP)
+                 |
+                 v
+         MCP-Sentinel gateway  <---->  Dashboard / REST API
+                 |
+    identity, integrity, validation,
+    policy, risk, approval / MFA,
+    sandbox preflight, output filters,
+    audit receipts
+                 |
+                 v
+      Local or remote MCP servers
 ```
- Claude Desktop / Claude Code ──stdio──► sentinel.bridge ─┐
- Cursor / VS Code / any client ──Streamable HTTP /mcp────►├─ MCP-Sentinel ─► your MCP servers (stdio · HTTP · SSE)
- Dashboard ───────────────────────────────REST /v1───────►┘
-      identity → server trust → tool integrity (pinned) → input validation → RBAC × capability → policy / lockdown
-      → sequence · kill-chain · context · caller baseline (UEBA) · data flow · content taint · behaviour → risk = likelihood × impact
-      → obligations (MFA step-up · human approval · scoped lease) → sandbox pre-flight (shadow run, verdict, preview)
-      → execute → verify real effect vs. prediction (revert surprises, undo journal) → output firewall → signed receipt
-```
 
-Sentinel ships with an **empty registry**: no built-in or demo servers. See **[DEMO.md](DEMO.md)** for a 15-minute live demo built entirely from official MCP reference servers, and **[docs/mcp-servers.md](docs/mcp-servers.md)** for servers verified to work.
+The Python service is a FastAPI application. It manages upstream MCP connections and serves the REST API, MCP endpoint, and built frontend assets. SQLite is the default database; Redis is optional for shared state. Docker is used by the stronger sandbox backend when available and configured. The React/Vite frontends are built separately and served by the Python service.
 
-## What makes it different
+More detail: [architecture](docs/architecture.md), [MCP integrations](docs/llm-integration.md), [sandbox](docs/sandbox.md), and [API](docs/api.md).
 
-| | |
-|---|---|
-| **Sandboxed tool calls** (shadow execution) | Zero trust per call: every call to a local server is executed first against a copy of its folders in a Docker sandbox (`--network none`, read-only image, all capabilities dropped, unprivileged user) with planted decoy credentials. Inside, a supervisor runs a DNS sinkhole and connection sinks (every destination is logged and nothing leaves), inotify on the decoy home, a process log and command shims. Rules judge what the call **did**: reading or leaking planted credentials, a read-only tool changing files, deleting files it wasn't asked to touch, git hooks / startup-script persistence, network utilities, unexpected hosts, mass deletion. MALICIOUS is blocked even after approval and the tool quarantined; SUSPICIOUS goes to a human with the preview. A process backend is used when Docker is unavailable. [Details](docs/sandbox.md) |
-| **Effect preview on approvals** | The approval page shows what the call *would* do (each file created / modified / deleted, with a unified diff, plus network attempts and programs started), because it already ran in the sandbox. A non-expert approves the effect, not a JSON blob. |
-| **Time machine (undo)** | Every file change a real call makes is journalled with the previous version. One click (or `POST /v1/undo/{receipt}`) puts the files back. |
-| **Sandbox-evasion tripwire** | After the real call, its effect is diffed against the sandbox prediction. Changes the sandbox didn't see are reverted immediately, the output is withheld from the model and the tool is quarantined. |
-| **Blast-radius guard** | A call that would delete more than 25 files, wipe half a folder or rewrite 100+ files is blocked, whoever approves it. Moves and renames are recognised. |
-| **Behaviour audit on add** | Adding a local server exercises every tool once in the sandbox on a synthetic workspace (never your files). Malicious tools are quarantined before the model can call them, and each tool's observed behaviour becomes its contract. |
-| **"Is it safe?" verdict** | Adding a server always succeeds, and the dialog answers in plain language: SAFE, CAUTION, or **NOT SAFE**, with a numbered list of fixes. The verdict combines the vulnerability scan, supply-chain checks and the behaviour audit. NOT SAFE servers keep their sensitive tools restricted until an admin fixes them or accepts the risk. |
-| **Rug-pull firewall** | Each tool's raw wire definition is pinned on first sight and re-verified on a schedule, on `tools/list_changed`, and just before sensitive calls. Drift is diffed and classified (COSMETIC / BENIGN / SUSPICIOUS / MALICIOUS). **The model only ever receives the pinned definition**, so a changed description never reaches the LLM before review. Tested on real package updates of the official servers. |
-| **Vulnerability scanner** (SecureMCP port) | A Python port of [SecureMCP](https://github.com/makalin/SecureMCP) with its stubs implemented: OAuth / token analysis (JWT `alg`/`exp`/scope/audience, token formats, RFC 9728 / 8414 metadata, PKCE S256), authentication and server-integrity probes (TLS, auth bypass with bogus credentials, Origin / DNS-rebinding, CORS, session ids), and prompt-injection testing of tools, prompts and resources, including opt-in active probes against read-only tools that run **inside the honeypot**. HTML/JSON reports with A–F grades. Every server is scanned automatically when it is added: the server is always added, but the scan recommends fixes and a severe finding marks it **NOT SAFE** and restricts its sensitive tools. |
-| **Honeypot** | A process-level run in a decoy home full of canary credentials behind a recording egress proxy. It is the registration check when the sandbox is switched off, and it hosts the scanner's active probes for local servers. |
-| **Tool-poisoning scanner** | Hidden `<IMPORTANT>` blocks, instruction overrides, secrecy directives, approval-bypass wording, credential-path references, cross-server shadowing, Unicode-tag / zero-width / bidi / ANSI smuggling, encoded payloads, all checked in descriptions *and* parameter metadata. Tuned on real servers to avoid false positives. |
-| **Content-level taint tracking** | Secrets returned by any tool are redacted for the model and fingerprinted. If those bytes later leave through *any* tool, even URL-, base64- or hex-encoded, the call is hard-blocked. |
-| **Lethal-trifecta breaker** | Per workflow and across the whole toolset: private data + untrusted content + egress is detected, and Sentinel names the smallest set of servers to restrict. |
-| **Accounts, organizations & RBAC** | Real login-gated accounts (hashed passwords, SQLite), as **individuals** or **organizations**. An org admin gets a **Team & Access** console to add/remove members, set passwords and assign exactly which MCP servers and tools each employee may use. Assignments are enforced on every call (an unassigned call is blocked with `deny.not_assigned`) and filter what the employee even sees — not just hidden in the UI. |
-| **Caller behaviour analytics (UEBA)** | Sentinel profiles the *caller*, not just the server: each user / agent gets a learned baseline (tools, servers, capabilities, active hours, sensitive-access rate, agents). Deviations become risk evidence — a first-ever sensitive capability, an unfamiliar agent on a known identity (token reuse), off-hours sensitive access, a volume spike, or sensitive attempts after repeated denials. A new caller is never penalised during its learning window. |
-| **Indirect-injection kill chain** | Beyond the immediately preceding call, a sensitive / code-execution / infrastructure action is flagged when untrusted content was ingested *anywhere* earlier in the workflow (the classic prompt-injection → privileged-action chain). |
-| **Evidence-fusion risk engine** | Risk = likelihood (noisy-OR of independent evidence) × impact (capability, data class, destructiveness, egress), with decaying per-workflow memory, a corroboration boost when several independent detectors agree, and an additive explanation waterfall. Hard policy always wins. |
-| **Out-of-band step-up** | RFC 6238 TOTP (replay-protected) or human approval. Claude's call is *held open* while you approve in the browser, then completes inline under a short-lived, scoped capability lease. |
-| **Output firewall** | Invisible / ANSI characters stripped, secrets redacted, prompt injections withheld or spotlighted, outputs withheld when the server misbehaved during the call. |
-| **Tamper-evident ledger** | Every decision is a SHA-256 hash-chained, Ed25519-signed receipt with its gate trace and risk factors. |
+## Requirements
 
-## Quick start
+For a local host installation:
 
-Requirements: Python ≥ 3.11, Node 18+ (dashboard and `npx` servers), [uv](https://docs.astral.sh/uv/) (`uvx` servers, and a managed Python if your system one is older) and **Docker Desktop or Docker Engine** for full sandbox containment. Without Docker, Sentinel uses the process sandbox (observation only) and escalates write and execute calls it cannot verify.
+- **Python 3.11 or newer.** The Makefile uses [uv](https://docs.astral.sh/uv/) to create a Python 3.12 environment. `pip` and `venv` work when a suitable Python is already installed.
+- **Node.js 18 or newer** and npm to build the landing site and dashboard, and to run npm-based MCP servers such as `npx` servers.
+- **uv** if you use `uvx`-based MCP servers. Install instructions are at [docs.astral.sh/uv](https://docs.astral.sh/uv/).
+- **Docker Desktop or Docker Engine** for the Docker sandbox backend. Without a usable Docker daemon, automatic mode falls back to the process sandbox, which does not provide equivalent containment.
+- An MCP client (for example, [Claude Desktop](https://claude.com/download) or [Claude Code](https://docs.anthropic.com/en/docs/claude-code)) to use tools through the stdio bridge.
 
-**Linux (tested on Pop!_OS 22.04 with Docker Desktop and Claude Desktop for Linux) and macOS:**
+Docker Compose is an alternative for a shared local-stack demonstration. It starts Sentinel with PostgreSQL, Redis, and the dashboard proxy; see [Docker Compose](#docker-compose).
+
+## Installation and local setup
+
+Clone the repository and enter its directory:
 
 ```bash
-make setup            # uv-managed Python 3.12 venv, web + dashboard builds, Docker sandbox image
-make claude           # add Sentinel to Claude Desktop (keeps a backup of your config)
-make run              # control plane on http://127.0.0.1:8443
-make doctor           # checks Python, Docker, the sandbox, npx/uvx and the Claude Desktop setup
-make reset-demo       # clear demo activity and refresh ~/sentinel-demo (keeps servers)
+git clone <repository-url>
+cd MCP-SENTINEL-main
 ```
 
-`make setup` runs these steps, which you can also run by hand (on Windows use `python -m venv .venv` and `pip install -e ".[dev]"`):
+### Linux and macOS
+
+The Makefile sets up the Python environment, installs the package in editable mode, builds both frontends, and builds the sandbox image when Docker is running:
 
 ```bash
-uv venv --python 3.12 .venv && uv pip install --python .venv/bin/python -e ".[dev]"
-(cd web && npm install && npm run build)          # landing + auth site, served at /
-(cd dashboard && npm install && npm run build)    # the dashboard, served at /app
-docker build -t mcp-sentinel/sandbox:1 -f docker/sandbox-runtime.Dockerfile docker/   # or Dashboard → Sandbox → Build image
-.venv/bin/mcp-sentinel install-claude          # Claude Desktop   (or: install-claude-code)
-.venv/bin/mcp-sentinel serve
+make setup
 ```
 
-**Open http://127.0.0.1:8443** for the landing page, then **sign in** (the dashboard at `/app` is login-gated). Accounts are real: passwords are hashed (PBKDF2) and stored in SQLite, with **individual** and **organization** account types. Seeded demo logins (password `sentinel`):
-
-| Login | Type | Sees |
-|---|---|---|
-| `you@demo.dev` | Individual | the full control-plane dashboard (shares the bridge's `local-user` subject) |
-| `admin@northstar.dev` | Org admin | the dashboard **plus Team & Access**: add/remove members, set passwords, and assign exactly which MCP servers/tools each employee may use |
-| `analyst@northstar.dev` | Org employee | a restricted dashboard and **only the tools the admin assigned** — every unassigned call is blocked (`deny.not_assigned`), whatever a prompt asks for |
-
-You don't even need `make run` before opening Claude: when Claude Desktop launches Sentinel's bridge and the API isn't running, the bridge starts it in the background (`~/.mcp-sentinel/sentinel.log`; stop it with `mcp-sentinel stop`). Claude Desktop **Desktop Extensions** (Settings → Extensions, e.g. the built-in Filesystem one) talk to Claude directly and bypass Sentinel: the dashboard's **Connect** page and `mcp-sentinel doctor` list them so you can turn them off.
-
-Then add servers in the dashboard (**Servers → Connect server**; presets for Filesystem, Memory, Fetch, Git, Time, …), or move the ones you already use behind Sentinel:
+If you prefer to run the steps yourself:
 
 ```bash
-mcp-sentinel import-claude --replace              # from Claude Desktop
-mcp-sentinel import-claude --from code --replace  # from Claude Code (~/.claude.json, .mcp.json)
+uv venv --python 3.12 .venv
+uv pip install --python .venv/bin/python -e ".[dev]"
+
+cd web && npm install && npm run build && cd ..
+cd dashboard && npm install && npm run build && cd ..
+
+docker build -t mcp-sentinel/sandbox:1 \
+  -f docker/sandbox-runtime.Dockerfile docker/
 ```
 
-Sentinel announces new tools with `tools/list_changed`. Clients that honour it refresh on their own; in Claude Code run `/mcp` to reconnect if needed. Claude Desktop caches its tool list: toggle the connector or restart it. Until then, new tools are usable immediately through `sentinel_discover_tools` / `sentinel_invoke`, which go through the same enforcement.
+The Docker image build is needed for the Docker sandbox backend. You can also build the image later from **Dashboard → Sandbox → Build image**. If Docker is unavailable, setup can still be used without the image, with the process sandbox's reduced isolation.
 
-Tests: `make test` (or `.venv/bin/python -m pytest -q`). The suite runs against a real MCP server over stdio and Streamable HTTP, and the sandbox tests use the real Docker backend when the image is built.
+### Windows
 
-Data lives in the project folder (`sentinel.db`, `keys/`) and in `~/.mcp-sentinel/` (sandbox package cache, mirrors, undo journal, log), whatever directory you start Sentinel from. Reset the demo to a clean slate any time with `scripts/reset-demo.sh` (clears all activity and caller profiles, keeps the registered servers) or `scripts/reset-demo.sh --wipe --start` (empty registry, then re-registers and re-audits the four demo servers).
+Run in PowerShell from the repository directory:
 
-**Docker Compose** (Postgres + Redis, for a shared team instance): `docker compose up --build`, then open http://localhost:3000. Inside the container Sentinel has no Docker access, so the sandbox runs in process mode; run Sentinel on the host for full containment and the Claude Desktop bridge.
+```powershell
+py -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -e ".[dev]"
 
-**Windows host setup:** see [docs/windows.md](docs/windows.md) for the PowerShell launcher, local Filesystem MCP configuration, and dynamic text-file duplication workflow. Run Sentinel on Windows when a local MCP server needs Windows paths such as `C:\`.
+Push-Location .\web
+npm install
+npm run build
+Pop-Location
 
-## Next add-ons worth building
+Push-Location .\dashboard
+npm install
+npm run build
+Pop-Location
 
-Already implemented: sandbox pre-flight, effect previews, the time machine, the evasion tripwire, the blast-radius guard, the behaviour audit and the safety verdict, approval alerts to Slack / Teams / ntfy (phone) / signed webhooks with the effect preview, and workflow replay exported as a signed incident report ([details](docs/notifications-and-reports.md)). Natural next steps:
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\start-windows.ps1
+```
 
-* **gVisor / Firecracker runtime** for the sandbox (`--runtime=runsc`), and the option to run the real stdio servers in containers too.
-* **Signed server attestations** (Sigstore) plus a shared, signed feed of observed rug pulls and malicious tool behaviours.
-* **Per-user upstream OAuth**, so each person's calls use their own credentials.
+The Windows launcher serves the local application and stores state under `%LOCALAPPDATA%\MCP-Sentinel`. Local stdio MCP servers that need Windows paths should connect to a Sentinel process running on the Windows host. See [Running on Windows](docs/windows.md) for more detail and a safe filesystem-server example.
 
-## Documentation
+## Run MCP-Sentinel
 
-- **[DEMO.md](DEMO.md)**: live demo script · [Compatible MCP servers](docs/mcp-servers.md)
-- [Sandboxed tool calls](docs/sandbox.md) · [Notifications & incident reports](docs/notifications-and-reports.md) · [Architecture](docs/architecture.md) · [Risk engine](docs/risk-engine.md) · [Rug-pull detection](docs/rug-pull-detection.md) · [Vulnerability scanner](docs/vulnerability-scanner.md)
-- [Claude Desktop, Claude Code & other clients](docs/llm-integration.md) · [API](docs/api.md)
+Start the API and dashboard server:
+
+```bash
+# Linux/macOS, after `make setup`
+make run
+
+# Or from any platform with the environment activated
+mcp-sentinel serve
+```
+
+By default the service binds to `127.0.0.1:8443`. Open [http://127.0.0.1:8443](http://127.0.0.1:8443) for the landing/sign-in page and [http://127.0.0.1:8443/app](http://127.0.0.1:8443/app) for the dashboard. API documentation is available at [http://127.0.0.1:8443/docs](http://127.0.0.1:8443/docs) while the service is running.
+
+Useful CLI commands:
+
+```bash
+mcp-sentinel serve            # start the API and built UI
+mcp-sentinel stop             # stop an API process started by Sentinel
+mcp-sentinel doctor            # inspect Python, Docker, tools, and client setup
+mcp-sentinel init              # initialize/seed the database
+mcp-sentinel claude-config     # print a client configuration without changing it
+```
+
+On a Windows checkout, invoke the command through the virtual environment, for example `\.venv\Scripts\mcp-sentinel.exe serve`, or use the supplied PowerShell launcher. When Claude starts the Sentinel bridge while the API is down, the bridge can start the API in the background; its log is under `~/.mcp-sentinel/` on Unix-like systems.
+
+### Demo sign-in
+
+In the default demo configuration, the application seeds example accounts with the password `sentinel`:
+
+| Account | Purpose |
+| --- | --- |
+| `you@demo.dev` | Individual dashboard account |
+| `admin@northstar.dev` | Organization administrator, including Team & Access |
+| `analyst@northstar.dev` | Organization employee with assigned access |
+
+These accounts and demo token issuance are for local evaluation only. Do not use the default password or demo signing secret for a deployed instance.
+
+## Connect an MCP client
+
+For Claude Desktop, the CLI edits the client configuration and keeps a timestamped backup of an existing file:
+
+```bash
+mcp-sentinel install-claude
+```
+
+For Claude Code:
+
+```bash
+mcp-sentinel install-claude-code
+```
+
+Restart or reconnect the MCP client to load Sentinel. The bridge uses stdio between the client and Sentinel. Sentinel's HTTP MCP endpoint is available at `/mcp` for clients that support Streamable HTTP. See [docs/llm-integration.md](docs/llm-integration.md) for other clients, manual configuration, and authentication notes.
+
+To move existing Claude-configured servers behind Sentinel, start the API first and then import them:
+
+```bash
+mcp-sentinel import-claude --replace
+mcp-sentinel import-claude --from code --replace
+```
+
+`--replace` removes successfully imported entries from the client configuration so they are reached through Sentinel. Review the resulting client configuration and dashboard after importing. Claude Desktop extensions can connect directly to servers and bypass Sentinel; disable any extension you want governed and add its server through Sentinel instead.
+
+## Add MCP servers
+
+The registry starts empty. In the dashboard, open **Servers → Connect server** and choose a transport:
+
+- **Local (stdio):** command, arguments, environment, and allowed workspace folders. The command must be installed and resolvable by Sentinel (`npx`, `uvx`, Python, or another executable).
+- **Remote HTTP/SSE:** the server URL and any required headers or authentication settings.
+
+Sentinel discovers and pins tool definitions, applies checks, and (when enabled) performs a scan and local behavior audit during registration. Inspect the trust status and findings before using a server. With clients that cache tool lists, reconnect or restart the client after adding a server. Sentinel also exposes discovery/invocation meta-tools while the client refreshes its tool list.
+
+The [compatible server guide](docs/mcp-servers.md) lists known server setups. The [demo guide](DEMO.md) walks through connecting reference servers and trying representative controls.
+
+## Configuration
+
+Settings use the `SENTINEL_` prefix. Pydantic settings load the repository `.env` first and then a `.env` in the current working directory; process environment variables can also configure settings. Start with [.env.example](.env.example), and do not commit real credentials or secrets.
+
+Common settings:
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `SENTINEL_ENV` | `dev` | Environment label. |
+| `SENTINEL_LOG_LEVEL` | `INFO` | Application log level. |
+| `SENTINEL_AUTH_MODE` | `demo` | `demo` for local evaluation or `oidc` for an OIDC/JWKS-backed deployment. |
+| `SENTINEL_DATABASE_URL` | SQLite database in the repository | SQLAlchemy database URL. PostgreSQL support is available with the `postgres` extra. |
+| `SENTINEL_REDIS_URL` | empty | Optional Redis URL; empty uses in-process state. |
+| `SENTINEL_GATEWAY_HOST` | `127.0.0.1` | Bind address. Loopback is the local-first default. |
+| `SENTINEL_GATEWAY_PORT` | `8443` | API and locally served UI port. |
+| `SENTINEL_SANDBOX_MODE` | `auto` | `auto`, `docker`, `process`, or `off`. |
+| `SENTINEL_SANDBOX_PREFLIGHT` | `all` | `all`, `writes`, or `off` for local-call preflight selection. |
+| `SENTINEL_SANDBOX_IMAGE` | `mcp-sentinel/sandbox:1` | Docker image used for sandbox runs. |
+| `SENTINEL_DEMO_JWT_SECRET` | demo-only placeholder | Shared secret for demo tokens. Replace it for local custom setups; use OIDC for non-demo deployments. |
+
+The configuration also includes risk thresholds, approval and lease timeouts, allowed hosts and CORS origins, scan behavior, notification channels, and data-flow controls. See [sentinel/config.py](sentinel/config.py) for the complete list and defaults. For OIDC, configure `SENTINEL_AUTH_MODE=oidc`, the issuer/audience, JWKS URL, client ID, and accepted asymmetric JWT algorithms for your identity provider.
+
+State is stored in the configured database and key files. By default, the SQLite database is `sentinel.db` in the repository and signing/encryption keys are under `keys/`; sandbox caches, logs, and related runtime data are under `~/.mcp-sentinel/` on Unix-like systems. Back up and protect these locations according to your deployment needs.
+
+## Docker Compose
+
+For a containerized local stack with PostgreSQL, Redis, Sentinel, and the dashboard proxy:
+
+```bash
+docker compose up --build
+```
+
+Open [http://localhost:3000](http://localhost:3000) for the dashboard. The Sentinel API is published on `http://localhost:8444` by default; change the host port with `SENTINEL_HOST_PORT`, for example:
+
+```bash
+SENTINEL_HOST_PORT=9000 docker compose up --build
+```
+
+Compose uses demo authentication and demo credentials in its checked-in configuration. Treat it as a local evaluation stack: replace credentials and configure production authentication before broader exposure. This container setup does not mount the host Docker socket, so Sentinel's Docker sandbox backend is not available inside it; use a host installation for full local-server sandbox containment and the desktop stdio bridge. Persistent named volumes hold PostgreSQL data and Sentinel keys.
+
+## Development
+
+The project uses Python with setuptools, FastAPI, SQLAlchemy, pytest, and two Vite/React frontends. The package is installed editable with `pip install -e ".[dev]"` or the equivalent `uv` command above.
+
+Useful commands from the repository root:
+
+```bash
+make setup       # install Python dependencies, build both frontends, build sandbox image if Docker runs
+make run         # run the local service
+make doctor      # diagnose local runtime and client setup
+make test        # run the Python test suite
+make reset-demo  # reset demo activity while retaining registered servers
+```
+
+Without Make, run tests with:
+
+```bash
+python -m pytest -q
+```
+
+Frontend development servers can be run independently:
+
+```bash
+cd web && npm install && npm run dev
+cd dashboard && npm install && npm run dev
+```
+
+The Vite configuration proxies API requests to the local Sentinel service. Build both frontends with `npm run build` in each directory before expecting the Python service to serve their static assets. Useful code areas include `sentinel/` for the gateway, API, configuration, and persistence; `identity/`, `policy/`, `risk/`, `integrity/`, `sandbox/`, `workflow/`, and `mcp_servers/` for core subsystems; and `dashboard/` plus `web/` for the UI.
+
+## API and technical details
+
+- REST endpoints are versioned under `/v1`; interactive OpenAPI docs are served at `/docs` and the schema at `/openapi.json` by FastAPI.
+- The MCP endpoint is `/mcp` for Streamable HTTP; the stdio client adapter is `mcp-sentinel bridge` (normally launched by the MCP client).
+- The default persistence backend is SQLite. PostgreSQL is supported through the `postgres` optional dependency. Redis is optional and backs shared ephemeral state when configured.
+- Tool calls pass through identity, server trust and tool-integrity checks, input validation, policy/capability enforcement, risk evaluation, any required step-up/approval, execution controls, output filtering, and receipt recording. See [architecture](docs/architecture.md) and [API reference](docs/api.md).
+- MCP-Sentinel supports standard local and remote MCP transport patterns; details and known compatibility notes are in [docs/mcp-servers.md](docs/mcp-servers.md).
+
+## Troubleshooting
+
+- **Run `mcp-sentinel doctor` first.** It checks the local runtime, sandbox readiness, MCP launch tools, and client configuration.
+- **The dashboard is missing or unstyled:** build both `web` and `dashboard` frontends with `npm run build` in their directories, then restart the service.
+- **No sandbox containment:** ensure Docker is running and build `mcp-sentinel/sandbox:1`. In automatic mode, Sentinel can fall back to process mode, which has weaker isolation and may request approval for effects it cannot verify.
+- **MCP server command cannot be found:** install its runtime/package manager and ensure the command (`npx`, `uvx`, etc.) is on the PATH inherited by Sentinel. Check the server's connection details in the dashboard.
+- **New tools do not appear in the client:** reconnect the Sentinel MCP server or restart the client. Some clients cache tool definitions; the Sentinel discovery/invocation meta-tools remain available.
+- **A local path is inaccessible:** ensure the upstream server's configured root includes it. For Windows host paths, run Sentinel on Windows; a container cannot access host paths unless they are mounted. See [docs/windows.md](docs/windows.md).
+- **A Claude Desktop extension bypasses policy:** disable the direct extension and connect its MCP server behind Sentinel.
+
+## Documentation and references
+
+- [Live demo](DEMO.md) · [Compatible MCP servers](docs/mcp-servers.md)
+- [Architecture](docs/architecture.md) · [API](docs/api.md) · [MCP client integration](docs/llm-integration.md)
+- [Sandbox](docs/sandbox.md) · [Risk engine](docs/risk-engine.md) · [Vulnerability scanner](docs/vulnerability-scanner.md) · [Rug-pull detection](docs/rug-pull-detection.md)
 - [Security model](docs/security-model.md) · [Threat model](docs/threat-model.md) · [Limitations](docs/limitations.md)
+- [Windows setup](docs/windows.md) · [Notifications and incident reports](docs/notifications-and-reports.md)
+- [Model Context Protocol](https://modelcontextprotocol.io/) · [Python](https://www.python.org/) · [Node.js](https://nodejs.org/) · [Docker](https://docs.docker.com/)
 
-Apache-2.0. Self-hostable, model-agnostic, client-agnostic and server-agnostic. The vulnerability scanner ports ideas from SecureMCP (MIT, © Mehmet T. Akalin).
+## Contributing
+
+Contributions are welcome. Before opening a change:
+
+1. Check existing issues and documentation so the change fits the project behavior and security model.
+2. Keep changes focused, document configuration or behavior changes, and include tests for changed behavior where appropriate.
+3. Run the relevant checks locally, including `make test` for Python changes and frontend builds for UI changes.
+4. Describe the behavior changed, the checks run, and any limitations or security implications in the pull request.
+
+Do not include secrets, personal data, real credentials, or unreviewed security-sensitive samples in commits. The package metadata declares Apache-2.0; retain attribution for third-party components.
+
+## License
+
+The package metadata declares the Apache-2.0 license. This checkout does not currently include a `LICENSE` text file, so consult the distribution or repository maintainers for the license text. The vulnerability scanner incorporates ideas from [SecureMCP](https://github.com/makalin/SecureMCP); see the project's notices and source for attribution and licensing details.

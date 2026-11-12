@@ -75,12 +75,13 @@ class CapabilityLeaseManager:
         if server_id is not None:
             query = query.filter(or_(LeaseRow.server_id == server_id, LeaseRow.server_id.is_(None), LeaseRow.server_id == ""))
         rows = query.order_by(LeaseRow.created_at.desc()).all()
+        expired_any = False
         for row in rows:
             expires = as_utc(row.expires_at)
             if expires is None or expires <= now:
                 row.state = LeaseState.EXPIRED.value
                 self.session.add(row)
-                self.session.commit()
+                expired_any = True
                 continue
             # Action-bound lease: only the exact approved arguments are covered.
             if row.scope_hash and scope_hash is not None and row.scope_hash != scope_hash:
@@ -89,8 +90,12 @@ class CapabilityLeaseManager:
             if remaining <= 15 and row.state != LeaseState.EXPIRING.value:
                 row.state = LeaseState.EXPIRING.value
                 self.session.add(row)
+                expired_any = True
+            if expired_any:
                 self.session.commit()
             return row
+        if expired_any:
+            self.session.commit()
         return None
 
     def revoke(self, lease_id: str, reason: str) -> None:

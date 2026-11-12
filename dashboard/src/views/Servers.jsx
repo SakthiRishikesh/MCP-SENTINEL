@@ -7,16 +7,26 @@ import { AuditTable } from "../components/sandbox.jsx";
 
 // Official reference servers, pinned (an unpinned `npx -y pkg` can change code on any launch).
 const PRESETS = [
-  { label: "Filesystem", name: "Filesystem", command: "npx", args: ["-y", "@modelcontextprotocol/server-filesystem@2026.8.31", "<absolute path to a folder>"] },
+  { label: "Filesystem", name: "Filesystem", command: "npx", args: ["-y", "@modelcontextprotocol/server-filesystem@2.3.0"], pathArg: "Folder to expose (enter an absolute path)" },
   { label: "Memory", name: "Memory", command: "npx", args: ["-y", "@modelcontextprotocol/server-memory@2026.8.31"] },
   { label: "Fetch", name: "Fetch", command: "uvx", args: ["mcp-server-fetch==2026.8.18"] },
-  { label: "Git", name: "Git", command: "uvx", args: ["mcp-server-git==2026.8.18", "--repository", "<absolute path to a git repo>"] },
+  { label: "Git", name: "Git", command: "uvx", packageArgs: ["mcp-server-git==2026.8.18"], args: ["--repository"], pathArg: "Git repository (enter an absolute path)" },
   { label: "Time", name: "Time", command: "uvx", args: ["mcp-server-time==2026.8.18"] },
   { label: "Sequential thinking", name: "Sequential thinking", command: "npx", args: ["-y", "@modelcontextprotocol/server-sequential-thinking@2026.8.31"] },
   { label: "Everything (test)", name: "Everything", command: "npx", args: ["-y", "@modelcontextprotocol/server-everything@2026.8.31"] },
-  { label: "Sentinel Operations (live)", name: "Sentinel Operations", command: "python", args: ["<absolute path to mcp_servers/operations.py>"] },
-  { label: "Sentinel Live Report", name: "Sentinel Live Report", command: "python", args: ["<absolute path to mcp_servers/reporter.py>", "<absolute path to an existing report folder>"] },
+  { label: "Sentinel Operations (live)", name: "Sentinel Operations", command: "python", args: ["-m", "mcp_servers.operations"] },
+  { label: "Sentinel Live Report", name: "Sentinel Live Report", command: "python", args: ["-m", "mcp_servers.reporter"], pathArg: "Existing folder for generated reports (enter an absolute path)" },
 ];
+
+function presetArgs(preset) {
+  const args = [...(preset.packageArgs || []), ...(preset.args || [])];
+  if (preset.pathArg) {
+    const path = window.prompt(preset.pathArg);
+    if (!path?.trim()) return null;
+    args.push(path.trim());
+  }
+  return args;
+}
 const REMOTE_PRESETS = [
   { label: "DeepWiki", name: "DeepWiki", url: "https://mcp.deepwiki.com/mcp" },
   { label: "Context7", name: "Context7", url: "https://mcp.context7.com/mcp" },
@@ -110,7 +120,7 @@ function AddServerModal({ onClose, onDone, toast }) {
           <div className="presets">
             <span className="muted small">Presets:</span>
             {PRESETS.map((p) => (
-              <button type="button" key={p.label} className="btn btn-sm" onClick={() => setForm((f) => ({ ...f, server_name: p.name, command: p.command, args: p.args.join("\n") }))}>{p.label}</button>
+              <button type="button" key={p.label} className="btn btn-sm" onClick={() => { const args = presetArgs(p); if (args) setForm((f) => ({ ...f, server_name: p.name, command: p.command, args: args.join("\n") })); }}>{p.label}</button>
             ))}
           </div>
         ) : (

@@ -10,6 +10,7 @@ from sqlalchemy import (
     Boolean,
     DateTime,
     Float,
+    Index,
     Integer,
     String,
     Text,
@@ -87,6 +88,7 @@ class ToolRow(Base):
     tool_id: Mapped[str] = mapped_column(String(256), primary_key=True)
     server_id: Mapped[str] = mapped_column(String(128), index=True)
     tool_name: Mapped[str] = mapped_column(String(256), index=True)
+    __table_args__ = (Index("ix_tools_server_tool", "server_id", "tool_name"),)
     version: Mapped[str] = mapped_column(String(64))
     schema_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     capabilities: Mapped[list[Any]] = mapped_column(JSON, default=list)
@@ -203,7 +205,7 @@ class WorkflowCallRow(Base):
     decision: Mapped[str | None] = mapped_column(String(32), nullable=True, default="")
     risk_score: Mapped[int | None] = mapped_column(Integer, nullable=True, default=0)
     flow_roles: Mapped[list[Any] | None] = mapped_column(JSON, nullable=True, default=list)
-    subject: Mapped[str | None] = mapped_column(String(256), nullable=True, default="")
+    subject: Mapped[str | None] = mapped_column(String(256), nullable=True, default="", index=True)
 
 
 class ToolChangeRow(Base):
@@ -427,21 +429,33 @@ def session_scope() -> Iterator[Session]:
     session = get_session_factory()()
     try:
         yield session
+    except Exception:
+        session.rollback()
+        raise
     finally:
         session.close()
 
 
 def _literal_default(column) -> str | None:
     default = column.default
-    if default is None or not getattr(default, "is_scalar", False):
+    if default is None:
         return None
-    value = default.arg
-    if isinstance(value, bool):
-        return "1" if value else "0"
-    if isinstance(value, (int, float)):
-        return str(value)
-    if isinstance(value, str):
-        return "'" + value.replace("'", "''") + "'"
+    if getattr(default, "is_scalar", False):
+        value = default.arg
+        if isinstance(value, bool):
+            return "1" if value else "0"
+        if isinstance(value, (int, float)):
+            return str(value)
+        if isinstance(value, str):
+            return "'" + value.replace("'", "''") + "'"
+        return None
+    # Handle callable defaults (list, dict) so new columns get a sensible DEFAULT clause
+    if getattr(default, "is_callable", False):
+        arg = default.arg
+        if arg is list:
+            return "'[]'"
+        if arg is dict:
+            return "'{}'"
     return None
 
 
